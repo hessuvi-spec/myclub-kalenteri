@@ -1,0 +1,38 @@
+# GitHub ajaa tämän automaattisesti kerran tunnissa.
+name: myClub -> Google-kalenteri
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # joka tunti, 17 minuuttia yli (aika on UTC:ta)
+  workflow_dispatch:        # mahdollistaa käsin käynnistyksen "Run workflow" -napista
+
+jobs:
+  synkronoi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write       # tarvitaan avaimettomaan Google-kirjautumiseen
+    steps:
+      - name: Hae koodi
+        uses: actions/checkout@v4
+
+      - name: Kirjaudu Googleen (ilman avaintiedostoa)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GOOGLE_WIF_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+
+      - name: Asenna Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Asenna kirjastot
+        run: pip install -r requirements.txt
+
+      - name: Synkronoi
+        run: python synkronoi.py
+        env:
+          MYCLUB_ICS_URL: ${{ secrets.MYCLUB_ICS_URL }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
