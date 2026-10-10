@@ -3,3 +3,4 @@ icalendar
 google-api-python-client
 google-auth
 tzdata
+recurring-ical-events
