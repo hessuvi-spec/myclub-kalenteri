@@ -30,8 +30,9 @@ OTSIKON_ALKU = {
     "peli": "🥅",
     "turnaus": "🏆",
     "oheis": "🏃",
-    "harjoitus": "🏒",
+    "harjoitu": "🏒",
     "jäät": "🏒",
+    "treeni": "🏒",
 }
 # Jos mikään hakusana ei osu, käytetään tätä (tyhjä "" = ei mitään).
 OTSIKON_ALKU_MUUTEN = "📅"
