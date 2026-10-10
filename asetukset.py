@@ -18,6 +18,7 @@ MUKAAN_JOS_NIMESSA = []
 
 # Tapahtumat, joiden nimessä on jokin näistä sanoista, jätetään pois.
 POIS_JOS_NIMESSA = ["punainen", "sininen"]
+AINA_MUKAAN_JOS_NIMESSA = ["hokki valkoinen"]
 # Esimerkki:  POIS_JOS_NIMESSA = ["vanhempainpalaveri", "talkoot"]
 
 
