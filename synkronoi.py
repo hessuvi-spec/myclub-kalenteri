@@ -22,6 +22,7 @@ import os
 import sys
 from zoneinfo import ZoneInfo
 
+import recurring_ical_events
 import requests
 from icalendar import Calendar
 
@@ -58,8 +59,24 @@ def hae_myclub_tapahtumat(url):
         sys.exit("Virhe: linkin takaa ei tullut kalenteria. Tarkista, että kopioit "
                  "myClubin Kalenteritilaukset-sivulta koko linkin.")
 
-    tapahtumat = []
+    # Toistuvat tapahtumat (esim. "joka torstai") tunnistetaan siitä, että niillä
+    # on toistosääntö (RRULE/RDATE) tai sama UID esiintyy useammin kuin kerran.
+    uid_maarat = {}
+    toistuvat = set()
     for osa in kalenteri.walk("VEVENT"):
+        uid = str(osa.get("UID", ""))
+        uid_maarat[uid] = uid_maarat.get(uid, 0) + 1
+        if "RRULE" in osa or "RDATE" in osa or uid_maarat[uid] > 1:
+            toistuvat.add(uid)
+
+    # Puretaan toistuvat tapahtumat yksittäisiksi kerroiksi aikaikkunan sisällä
+    nyt = dt.datetime.now(TZ)
+    ikkuna_alku = nyt - dt.timedelta(days=1)
+    ikkuna_loppu = nyt + dt.timedelta(days=asetukset.PAIVIA_ETEENPAIN + 1)
+    kerrat = recurring_ical_events.of(kalenteri).between(ikkuna_alku, ikkuna_loppu)
+
+    tapahtumat = []
+    for osa in kerrat:
         alku = osa.decoded("DTSTART")
         if "DTEND" in osa:
             loppu = osa.decoded("DTEND")
@@ -68,8 +85,17 @@ def hae_myclub_tapahtumat(url):
         else:
             loppu = alku + dt.timedelta(hours=1)
 
+        uid = str(osa.get("UID", ""))
+        avain = uid
+        if uid in toistuvat:
+            # Jokainen toistokerta tarvitsee oman tunnisteen. Käytetään kerran
+            # alkuperäistä aikaa, jotta siirretty harjoitus päivittyy eikä tuplaannu.
+            alkuperainen = osa.get("RECURRENCE-ID")
+            alkuperainen = alkuperainen.dt if alkuperainen else alku
+            avain = f"{uid}|{aikaleimaksi(alkuperainen).isoformat()}"
+
         tapahtumat.append({
-            "uid": str(osa.get("UID", "")),
+            "uid": avain,
             "nimi": str(osa.get("SUMMARY", "")).strip(),
             "paikka": str(osa.get("LOCATION", "")).strip(),
             "kuvaus": str(osa.get("DESCRIPTION", "")).strip(),
@@ -302,8 +328,8 @@ def main():
         kokeile(url)
         return
 
-    url = os.environ.get("MYCLUB_ICS_URL")
-    kalenteri_id = os.environ.get("GOOGLE_CALENDAR_ID")
+    url = os.environ.get("MYCLUB_ICS_URL", "").strip()
+    kalenteri_id = os.environ.get("GOOGLE_CALENDAR_ID", "").strip()  # poistetaan ylimääräiset välilyönnit
     if not url or not kalenteri_id:
         sys.exit("Virhe: MYCLUB_ICS_URL ja GOOGLE_CALENDAR_ID pitää olla asetettuina.")
 
@@ -322,5 +348,41 @@ def main():
     synkronoi(palvelu, kalenteri_id, tapahtumat, nyt, loppuraja)
 
 
+def nayta_virhe(viesti):
+    """Tulostaa virheen. GitHubissa virhe näkyy myös ajon yhteenvedossa
+    (Annotations), joten sen näkee ilman lokien avaamista."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        siivottu = viesti.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title=myClub-botti::{siivottu}")
+    else:
+        print(viesti)
+
+
+def selita_google_virhe(virhe):
+    koodi = virhe.resp.status
+    if koodi == 404:
+        return ("Google-kalenteria ei löytynyt (404). Joko GOOGLE_CALENDAR_ID on väärin, "
+                "tai kalenteria ei ole jaettu robotille kalenterirobotti@...iam.gserviceaccount.com.")
+    if koodi == 403:
+        return ("Robotilla ei ole lupaa muokata kalenteria (403). Anna kalenterin jakoasetuksissa "
+                "robotille oikeus 'Tee muutoksia tapahtumiin'.")
+    if koodi == 400:
+        return f"Google ei hyväksynyt pyyntöä (400). Tarkista GOOGLE_CALENDAR_ID. Tarkemmin: {virhe}"
+    return f"Google-virhe {koodi}: {virhe}"
+
+
 if __name__ == "__main__":
-    main()
+    from googleapiclient.errors import HttpError
+    try:
+        main()
+    except SystemExit as lopetus:
+        if isinstance(lopetus.code, str):
+            nayta_virhe(lopetus.code)
+            sys.exit(1)
+        raise
+    except HttpError as virhe:
+        nayta_virhe(selita_google_virhe(virhe))
+        sys.exit(1)
+    except Exception as virhe:
+        nayta_virhe(f"Odottamaton virhe: {type(virhe).__name__}: {virhe}")
+        raise
