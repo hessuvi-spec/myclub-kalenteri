@@ -109,6 +109,10 @@ def kuuluu_mukaan(tapahtuma, nyt, loppuraja):
     if aikaleimaksi(tapahtuma["alku"]) >= loppuraja:
         return False
     nimi = tapahtuma["nimi"]
+    # Nämä otetaan aina mukaan, vaikka nimessä olisi myös jokin pois-sana
+    aina_mukaan = getattr(asetukset, "AINA_MUKAAN_JOS_NIMESSA", [])
+    if aina_mukaan and sisaltaa_jonkin(nimi, aina_mukaan):
+        return True
     if asetukset.MUKAAN_JOS_NIMESSA and not sisaltaa_jonkin(nimi, asetukset.MUKAAN_JOS_NIMESSA):
         return False
     if asetukset.POIS_JOS_NIMESSA and sisaltaa_jonkin(nimi, asetukset.POIS_JOS_NIMESSA):
