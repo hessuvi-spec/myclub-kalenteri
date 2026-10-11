@@ -197,10 +197,12 @@ def ilmoita(tyyppi, viesti):
         print(viesti)
 
 
-def hae_leijonat_pelit():
-    """Hakee tulevat pelit asetuksissa annetuista Leijonien tulospalvelun sarjoista.
-    Jos haku epäonnistuu, palautetaan tyhjä lista: kalenteri päivittyy silti,
-    mutta ilman TV-linkkejä."""
+PELIT_TIEDOSTO = "pelit.json"
+
+
+def hae_leijonat_pelit_netista():
+    """Hakee tulevat pelit suoraan Leijonien tulospalvelusta.
+    Palauttaa None, jos haku ei onnistu (esim. palvelu estää GitHubin)."""
     pelit = []
     tanaan = dt.datetime.now(TZ).date().isoformat()
     for sarja_url in getattr(asetukset, "LEIJONAT_SARJAT", []):
@@ -220,9 +222,29 @@ def hae_leijonat_pelit():
             vastaus.raise_for_status()
             for taso in vastaus.json():
                 pelit.extend(taso.get("Games", []))
-        except Exception as virhe:  # ei kaadeta koko ohjelmaa TV-linkkien takia
-            ilmoita("warning", f"Leijonien tulospalvelun haku epäonnistui: {virhe}")
+        except Exception as virhe:
+            print(f"Leijonien tulospalvelun haku ei onnistunut: {virhe}")
+            return None
     return pelit
+
+
+def hae_leijonat_pelit():
+    """Hakee pelit netistä. Jos se ei onnistu, käytetään tiedostoa pelit.json,
+    jonka voi päivittää omalla koneella ohjelmalla paivita_pelit.py."""
+    if not getattr(asetukset, "LEIJONAT_SARJAT", []):
+        return []
+    pelit = hae_leijonat_pelit_netista()
+    if pelit is not None:
+        print(f"Pelit haettu suoraan tulospalvelusta ({len(pelit)} kpl).")
+        return pelit
+    if os.path.exists(PELIT_TIEDOSTO):
+        with open(PELIT_TIEDOSTO, encoding="utf-8") as f:
+            pelit = json.load(f)
+        print(f"Pelit luettu tiedostosta {PELIT_TIEDOSTO} ({len(pelit)} kpl).")
+        return pelit
+    ilmoita("warning", "Leijonat TV -linkkejä ei lisätty: tulospalvelu ei vastannut "
+                       f"eikä tiedostoa {PELIT_TIEDOSTO} löytynyt.")
+    return []
 
 
 def pelin_tv_linkit(peli):
@@ -268,7 +290,8 @@ def etsi_tapahtuman_pelit(tapahtuma, pelit):
     loppu = aikaleimaksi(tapahtuma["loppu"])
     nimi = " ".join(tapahtuma["nimi"].lower().split())
 
-    ehdokkaat = []
+    ehdokkaat = []          # pelit, joiden kellonaika sopii tapahtumaan
+    samana_paivana = []     # varalla: sama päivä ja joukkue, kellonaika ei täsmää
     for peli in pelit:
         try:
             paiva = dt.datetime.strptime(peli["GameDate"], "%d.%m.%Y").date()
@@ -280,12 +303,17 @@ def etsi_tapahtuman_pelit(tapahtuma, pelit):
                      for k in ("HomeTeamAbbrv", "AwayTeamAbbrv"))
         if osumat == 0:
             continue
+        samana_paivana.append((osumat, peli))
         if peli.get("GameTime"):
             tunnit, minuutit = peli["GameTime"].split(":")[:2]
             pelin_alku = alku.replace(hour=int(tunnit), minute=int(minuutit), second=0)
             if not (alku - dt.timedelta(minutes=30) <= pelin_alku <= loppu):
                 continue
         ehdokkaat.append((osumat, peli))
+    if not ehdokkaat:
+        # Pelin aika on voinut muuttua tai se on vielä merkitty "06:00"-tyyppisellä
+        # paikkamerkillä, joten tyydytään saman päivän otteluun.
+        ehdokkaat = samana_paivana
     if not ehdokkaat:
         return []
     paras = max(o for o, _ in ehdokkaat)
@@ -304,7 +332,7 @@ def lisaa_tv_linkit(tapahtumat, pelit):
         t["tv"] = "\n\n".join(rivit)
     linkillisia = sum(1 for t in tapahtumat if t["tv"])
     if getattr(asetukset, "LEIJONAT_SARJAT", []):
-        ilmoita("notice", f"Leijonat TV: tulospalvelusta {len(pelit)} tulevaa peliä, "
+        ilmoita("notice", f"Leijonat TV: {len(pelit)} tulevaa peliä tiedossa, "
                           f"linkki lisätty {linkillisia} kalenterimerkintään.")
 
 
