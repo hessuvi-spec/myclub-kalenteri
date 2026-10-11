@@ -19,7 +19,9 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sys
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 import recurring_ical_events
@@ -59,24 +61,33 @@ def hae_myclub_tapahtumat(url):
         sys.exit("Virhe: linkin takaa ei tullut kalenteria. Tarkista, että kopioit "
                  "myClubin Kalenteritilaukset-sivulta koko linkin.")
 
-    # Toistuvat tapahtumat (esim. "joka torstai") tunnistetaan siitä, että niillä
-    # on toistosääntö (RRULE/RDATE) tai sama UID esiintyy useammin kuin kerran.
-    uid_maarat = {}
-    toistuvat = set()
+    # Ryhmitellään tapahtumat UID:n (tapahtuman tunnisteen) mukaan.
+    # myClub voi antaa saman UID:n monelle eri tapahtumalle (esim. kaikki
+    # torstain harjoitukset), joten niitä ei saa yhdistää yhdeksi.
+    ryhmat = {}
     for osa in kalenteri.walk("VEVENT"):
-        uid = str(osa.get("UID", ""))
-        uid_maarat[uid] = uid_maarat.get(uid, 0) + 1
-        if "RRULE" in osa or "RDATE" in osa or uid_maarat[uid] > 1:
-            toistuvat.add(uid)
+        ryhmat.setdefault(str(osa.get("UID", "")), []).append(osa)
 
-    # Puretaan toistuvat tapahtumat yksittäisiksi kerroiksi aikaikkunan sisällä
     nyt = dt.datetime.now(TZ)
     ikkuna_alku = nyt - dt.timedelta(days=1)
     ikkuna_loppu = nyt + dt.timedelta(days=asetukset.PAIVIA_ETEENPAIN + 1)
-    kerrat = recurring_ical_events.of(kalenteri).between(ikkuna_alku, ikkuna_loppu)
+
+    kerrat = []        # (osa, uid, onko_toistuva)
+    for uid, osat in ryhmat.items():
+        if any("RRULE" in o or "RDATE" in o for o in osat):
+            # Oikea toistuva tapahtuma ("joka torstai"): puretaan yksittäisiksi kerroiksi
+            apukalenteri = Calendar()
+            for o in osat:
+                apukalenteri.add_component(o)
+            for o in recurring_ical_events.of(apukalenteri).between(ikkuna_alku, ikkuna_loppu):
+                kerrat.append((o, uid, True))
+        else:
+            # Tavalliset tapahtumat otetaan sellaisenaan, myös jos UID on sama
+            for o in osat:
+                kerrat.append((o, uid, len(osat) > 1))
 
     tapahtumat = []
-    for osa in kerrat:
+    for osa, uid, toistuva in kerrat:
         alku = osa.decoded("DTSTART")
         if "DTEND" in osa:
             loppu = osa.decoded("DTEND")
@@ -85,9 +96,8 @@ def hae_myclub_tapahtumat(url):
         else:
             loppu = alku + dt.timedelta(hours=1)
 
-        uid = str(osa.get("UID", ""))
         avain = uid
-        if uid in toistuvat:
+        if toistuva:
             # Jokainen toistokerta tarvitsee oman tunnisteen. Käytetään kerran
             # alkuperäistä aikaa, jotta siirretty harjoitus päivittyy eikä tuplaannu.
             alkuperainen = osa.get("RECURRENCE-ID")
@@ -171,12 +181,121 @@ def tunniste(uid):
     return hashlib.sha1(uid.encode("utf-8")).hexdigest()
 
 
+# ------------------------------------------------------------
+# 2b. Leijonat TV -linkit peleihin
+# ------------------------------------------------------------
+
+LEIJONAT_PELIT_URL = "https://tulospalvelu.leijonat.fi/helpers/getgames"
+
+
+def hae_leijonat_pelit():
+    """Hakee tulevat pelit asetuksissa annetuista Leijonien tulospalvelun sarjoista.
+    Jos haku epäonnistuu, palautetaan tyhjä lista: kalenteri päivittyy silti,
+    mutta ilman TV-linkkejä."""
+    pelit = []
+    tanaan = dt.datetime.now(TZ).date().isoformat()
+    for sarja_url in getattr(asetukset, "LEIJONAT_SARJAT", []):
+        kysely = parse_qs(urlparse(sarja_url).query)
+        try:
+            parametrit = {
+                "dwl": 0, "season": kysely["season"][0], "subSerieId": kysely["ssid"][0],
+                "teamid": 0, "districtid": 0, "gamedays": 2, "dog": tanaan, "levelid": -1,
+            }
+            vastaus = requests.get(LEIJONAT_PELIT_URL, params=parametrit, timeout=20,
+                                   headers={"User-Agent": "Mozilla/5.0 (myclub-kalenteri)"})
+            vastaus.raise_for_status()
+            for taso in vastaus.json():
+                pelit.extend(taso.get("Games", []))
+        except Exception as virhe:  # ei kaadeta koko ohjelmaa TV-linkkien takia
+            print(f"Huom: Leijonien tulospalvelun haku epäonnistui ({sarja_url}): {virhe}")
+    return pelit
+
+
+def pelin_tv_linkit(peli):
+    """Tekee pelin lähetyslinkit samalla tavalla kuin tulospalvelun oma sivu."""
+    leijonat_tv = (f"https://www.leijonat.tv/fi/game?ext-id={peli['GameID']}"
+                   f"&season-id={peli['Season']}")
+    linkit = []
+    lahteet = peli.get("StreamSources") or []
+    for lahde in lahteet:
+        url = lahde.get("StreamUrl") or ""
+        if not url and lahde.get("IsDefault"):
+            url = leijonat_tv
+        if url:
+            linkit.append((lahde.get("SourceName") or "Lähetys", url))
+    if not lahteet:
+        if peli.get("LiveURL"):
+            linkit.append(("Lähetys", peli["LiveURL"]))
+        elif peli.get("LiveFeedSource") == 4 and peli.get("OnlyStreamStorage") == 1:
+            linkit.append(("Leijonat TV", leijonat_tv))
+    return linkit
+
+
+def joukkue_nimessa(joukkue, nimi):
+    """Onko joukkueen nimi (esim. 'KHT Hokki Sininen') tapahtuman nimessä?
+    Etuliitteet kuten 'KHT ' saa jättää pois."""
+    vaihtoehdot = [joukkue]
+    for etuliite in getattr(asetukset, "LEIJONAT_POISTA_ETULIITE", []):
+        if joukkue.lower().startswith(etuliite.lower()):
+            vaihtoehdot.append(joukkue[len(etuliite):])
+    for v in vaihtoehdot:
+        v = " ".join(v.lower().split())
+        if v and re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", nimi):
+            return True
+    return False
+
+
+def etsi_tapahtuman_pelit(tapahtuma, pelit):
+    """Etsii myClub-tapahtumaa vastaavat pelit: sama päivä, joukkueen nimi
+    tapahtuman nimessä ja pelin alkuaika tapahtuman aikana."""
+    if not isinstance(tapahtuma["alku"], dt.datetime):
+        return []
+    alku = aikaleimaksi(tapahtuma["alku"])
+    loppu = aikaleimaksi(tapahtuma["loppu"])
+    nimi = " ".join(tapahtuma["nimi"].lower().split())
+
+    ehdokkaat = []
+    for peli in pelit:
+        try:
+            paiva = dt.datetime.strptime(peli["GameDate"], "%d.%m.%Y").date()
+        except (KeyError, ValueError):
+            continue
+        if paiva != alku.date():
+            continue
+        osumat = sum(joukkue_nimessa(peli.get(k) or "", nimi)
+                     for k in ("HomeTeamAbbrv", "AwayTeamAbbrv"))
+        if osumat == 0:
+            continue
+        if peli.get("GameTime"):
+            tunnit, minuutit = peli["GameTime"].split(":")[:2]
+            pelin_alku = alku.replace(hour=int(tunnit), minute=int(minuutit), second=0)
+            if not (alku - dt.timedelta(minutes=30) <= pelin_alku <= loppu):
+                continue
+        ehdokkaat.append((osumat, peli))
+    if not ehdokkaat:
+        return []
+    paras = max(o for o, _ in ehdokkaat)
+    return [p for o, p in ehdokkaat if o == paras]
+
+
+def lisaa_tv_linkit(tapahtumat, pelit):
+    """Lisää jokaiseen myClub-tapahtumaan kentän 'tv' (tekstirivit linkkeineen)."""
+    for t in tapahtumat:
+        rivit = []
+        for peli in etsi_tapahtuman_pelit(t, pelit):
+            for lahde, url in pelin_tv_linkit(peli):
+                aika = (peli.get("GameTime") or "")[:5]
+                ottelu = f"{peli.get('HomeTeamAbbrv')} - {peli.get('AwayTeamAbbrv')}"
+                rivit.append(f"📺 {lahde}: {ottelu}" + (f" klo {aika}" if aika else "") + f"\n{url}")
+        t["tv"] = "\n\n".join(rivit)
+
+
 def tee_google_tapahtuma(tapahtuma):
     """Muuttaa myClub-tapahtuman Google-kalenterin muotoon."""
     runko = {
         "summary": muotoile_otsikko(tapahtuma["nimi"]),
         "location": tapahtuma["paikka"],
-        "description": tapahtuma["kuvaus"],
+        "description": "\n\n".join(x for x in (tapahtuma.get("tv", ""), tapahtuma["kuvaus"]) if x),
         "start": aika_googlelle(tapahtuma["alku"]),
         "end": aika_googlelle(tapahtuma["loppu"]),
         # Muistutukset tulevat kalenterin omista oletusasetuksista
@@ -307,7 +426,10 @@ def kokeile(url):
     nyt = dt.datetime.now(TZ)
     loppuraja = nyt + dt.timedelta(days=asetukset.PAIVIA_ETEENPAIN)
     tapahtumat = sorted(hae_myclub_tapahtumat(url), key=lambda t: aikaleimaksi(t["alku"]))
-    print(f"myClubista löytyi {len(tapahtumat)} tapahtumaa.\n")
+    print(f"myClubista löytyi {len(tapahtumat)} tapahtumaa.")
+    pelit = hae_leijonat_pelit()
+    print(f"Leijonien tulospalvelusta löytyi {len(pelit)} tulevaa peliä.\n")
+    lisaa_tv_linkit(tapahtumat, pelit)
     for t in tapahtumat:
         if aikaleimaksi(t["loppu"]) <= nyt:
             continue  # menneitä ei näytetä
@@ -317,6 +439,8 @@ def kokeile(url):
         else:
             aika = t["alku"].strftime("%d.%m. koko päivä")
         print(f"[{merkki}] {aika}  {muotoile_otsikko(t['nimi'])}   (alkuperäinen: {t['nimi']})")
+        if t.get("tv") and merkki == "MUKAAN":
+            print("           " + t["tv"].replace("\n", "\n           "))
 
 
 def main():
@@ -343,6 +467,10 @@ def main():
         # Turvatoimi: jos myClub palauttaa tyhjää (esim. linkki rikki),
         # ei poisteta vahingossa kaikkea Google-kalenterista.
         sys.exit("Varoitus: myClubista ei tullut yhtään tapahtumaa, joten mitään ei muutettu.")
+
+    pelit = hae_leijonat_pelit()
+    print(f"Leijonien tulospalvelusta löytyi {len(pelit)} tulevaa peliä.")
+    lisaa_tv_linkit(tapahtumat, pelit)
 
     palvelu = yhdista_googleen()
     synkronoi(palvelu, kalenteri_id, tapahtumat, nyt, loppuraja)
