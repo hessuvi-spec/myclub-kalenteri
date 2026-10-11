@@ -188,6 +188,15 @@ def tunniste(uid):
 LEIJONAT_PELIT_URL = "https://tulospalvelu.leijonat.fi/helpers/getgames"
 
 
+def ilmoita(tyyppi, viesti):
+    """Tulostaa viestin. GitHubissa se näkyy myös ajon yhteenvedossa (Annotations)."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        siivottu = viesti.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::{tyyppi} title=myClub-botti::{siivottu}")
+    else:
+        print(viesti)
+
+
 def hae_leijonat_pelit():
     """Hakee tulevat pelit asetuksissa annetuista Leijonien tulospalvelun sarjoista.
     Jos haku epäonnistuu, palautetaan tyhjä lista: kalenteri päivittyy silti,
@@ -201,13 +210,18 @@ def hae_leijonat_pelit():
                 "dwl": 0, "season": kysely["season"][0], "subSerieId": kysely["ssid"][0],
                 "teamid": 0, "districtid": 0, "gamedays": 2, "dog": tanaan, "levelid": -1,
             }
-            vastaus = requests.get(LEIJONAT_PELIT_URL, params=parametrit, timeout=20,
-                                   headers={"User-Agent": "Mozilla/5.0 (myclub-kalenteri)"})
+            vastaus = requests.get(LEIJONAT_PELIT_URL, params=parametrit, timeout=20, headers={
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"),
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": sarja_url,
+            })
             vastaus.raise_for_status()
             for taso in vastaus.json():
                 pelit.extend(taso.get("Games", []))
         except Exception as virhe:  # ei kaadeta koko ohjelmaa TV-linkkien takia
-            print(f"Huom: Leijonien tulospalvelun haku epäonnistui ({sarja_url}): {virhe}")
+            ilmoita("warning", f"Leijonien tulospalvelun haku epäonnistui: {virhe}")
     return pelit
 
 
@@ -288,6 +302,10 @@ def lisaa_tv_linkit(tapahtumat, pelit):
                 ottelu = f"{peli.get('HomeTeamAbbrv')} - {peli.get('AwayTeamAbbrv')}"
                 rivit.append(f"📺 {lahde}: {ottelu}" + (f" klo {aika}" if aika else "") + f"\n{url}")
         t["tv"] = "\n\n".join(rivit)
+    linkillisia = sum(1 for t in tapahtumat if t["tv"])
+    if getattr(asetukset, "LEIJONAT_SARJAT", []):
+        ilmoita("notice", f"Leijonat TV: tulospalvelusta {len(pelit)} tulevaa peliä, "
+                          f"linkki lisätty {linkillisia} kalenterimerkintään.")
 
 
 def tee_google_tapahtuma(tapahtuma):
