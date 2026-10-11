@@ -18,7 +18,7 @@ MUKAAN_JOS_NIMESSA = []
 
 # Tapahtumat, joiden nimessä on jokin näistä sanoista, jätetään pois.
 POIS_JOS_NIMESSA = ["punainen", "sininen"]
-AINA_MUKAAN_JOS_NIMESSA = ["valkoinen"]
+AINA_MUKAAN_JOS_NIMESSA = ["hokki valkoinen"]
 # Esimerkki:  POIS_JOS_NIMESSA = ["vanhempainpalaveri", "talkoot"]
 
 
@@ -43,6 +43,9 @@ OTSIKON_ALKU_MUUTEN = "📅"
 POISTA_OTSIKOSTA = []
 # Esimerkki:  POISTA_OTSIKOSTA = ["U12 Kiekkoseura -", "(joukkue)"]
 
-
+LEIJONAT_SARJAT = [
+    "https://tulospalvelu.leijonat.fi/serie?season=2027&lid=102&did=0&ssid=4123",
+]
+LEIJONAT_POISTA_ETULIITE = ["KHT "]
 # Aikavyöhyke
 AIKAVYOHYKE = "Europe/Helsinki"
