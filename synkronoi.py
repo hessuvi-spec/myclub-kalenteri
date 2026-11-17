@@ -344,6 +344,7 @@ def tee_google_tapahtuma(tapahtuma):
         "description": "\n\n".join(x for x in (tapahtuma.get("tv", ""), tapahtuma["kuvaus"]) if x),
         "start": aika_googlelle(tapahtuma["alku"]),
         "end": aika_googlelle(tapahtuma["loppu"]),
+        "colorId": "10",   # 10 = tummanvihreä (Basil), 2 = vaaleanvihreä (Sage)
         # Muistutukset tulevat kalenterin omista oletusasetuksista
         "reminders": {"useDefault": True},
     }
